@@ -64,9 +64,14 @@ class PGAgent(nn.Module):
         # step 1: calculate Q values of each (s_t, a_t) point, using rewards (r_0, ..., r_t, ..., r_T)
         q_values: Sequence[np.ndarray] = self._calculate_q_vals(rewards)
 
-        # TODO: flatten the lists of arrays into single arrays, so that the rest of the code can be written in a vectorized
+        # DONE: flatten the lists of arrays into single arrays, so that the rest of the code can be written in a vectorized
         # way. obs, actions, rewards, terminals, and q_values should all be arrays with a leading dimension of `batch_size`
         # beyond this point.
+        obs = np.concatenate(obs)
+        actions = np.concatenate(actions)
+        rewards = np.concatenate(rewards)
+        terminals = np.concatenate(terminals)
+        q_values = np.concatenate(q_values)
 
         # step 2: calculate advantages from Q values
         advantages: np.ndarray = self._estimate_advantage(
@@ -74,13 +79,15 @@ class PGAgent(nn.Module):
         )
 
         # step 3: use all datapoints (s_t, a_t, adv_t) to update the PG actor/policy
-        # TODO: update the PG actor/policy network once using the advantages
-        info: dict = None
+        # DONE: update the PG actor/policy network once using the advantages
+        info: dict = self.actor.update(obs, actions, advantages)
 
         # step 4: if needed, use all datapoints (s_t, a_t, q_t) to update the PG critic/baseline
         if self.critic is not None:
-            # TODO: perform `self.baseline_gradient_steps` updates to the critic/baseline network
-            critic_info = None
+            # DONE: perform `self.baseline_gradient_steps` updates to the critic/baseline network
+            critic_info = {}
+            for _ in range(self.baseline_gradient_steps):
+                critic_info = self.critic.update(obs, q_values)
 
             info.update(critic_info)
 
@@ -94,14 +101,22 @@ class PGAgent(nn.Module):
         Note that all entries of the output list should be the exact same because each sum is from 0 to T (and doesn't
         involve t)!
         """
-        return None
+        discounts = [self.gamma ** i for i in range(len(rewards))]
+        discounted_return = sum([r * d for r, d in zip(rewards, discounts)])
+        return [discounted_return] * len(rewards)
 
     def _discounted_reward_to_go(self, rewards: Sequence[float]) -> Sequence[float]:
         """
         Helper function which takes a list of rewards {r_0, r_1, ..., r_t', ... r_T} and returns a list where the entry
         in each index t is sum_{t'=t}^T gamma^(t'-t) * r_{t'}.
         """
-        return None
+        discounted = [0] * len(rewards)
+        running_sum = 0
+        for i in reversed(range(len(rewards))):
+            running_sum = rewards[i] + self.gamma * running_sum
+            discounted[i] = running_sum
+        return discounted
+
 
     def _calculate_q_vals(self, rewards: Sequence[np.ndarray]) -> Sequence[np.ndarray]:
         """Monte Carlo estimation of the Q function."""
@@ -110,14 +125,13 @@ class PGAgent(nn.Module):
             # Case 1: in trajectory-based PG, we ignore the timestep and instead use the discounted return for the entire
             # trajectory at each point.
             # In other words: Q(s_t, a_t) = sum_{t'=0}^T gamma^t' r_{t'}
-            # TODO: use the helper function self._discounted_return to calculate the Q-values
-            q_values = None
+            # DONE: use the helper function self._discounted_return to calculate the Q-values
+            q_values = [np.array(self._discounted_return(rewards[i])) for i in range(len(rewards))]
         else:
             # Case 2: in reward-to-go PG, we only use the rewards after timestep t to estimate the Q-value for (s_t, a_t).
             # In other words: Q(s_t, a_t) = sum_{t'=t}^T gamma^(t'-t) * r_{t'}
-            # TODO: use the helper function self._discounted_reward_to_go to calculate the Q-values
-            q_values = None
-
+            # DONE: use the helper function self._discounted_reward_to_go to calculate the Q-values
+            q_values = [np.array(self._discounted_reward_to_go(rewards[i])) for i in range(len(rewards))]
         return q_values
 
     def _estimate_advantage(
@@ -132,18 +146,18 @@ class PGAgent(nn.Module):
         Operates on flat 1D NumPy arrays.
         """
         if self.critic is None:
-            # TODO: if no baseline, then what are the advantages?
-            advantages = None
+            # DONE: if no baseline, then what are the advantages?
+            advantages = q_values
         else:
-            # TODO: run the critic and use it as a baseline
-            values = None
+            # DONE: run the critic and use it as a baseline
+            values = ptu.to_numpy(self.critic(ptu.from_numpy(obs)))
             assert values.shape == q_values.shape
 
             if self.gae_lambda is None:
-                # TODO: if using a baseline, but not GAE, what are the advantages?
-                advantages = None
+                # DONE: if using a baseline, but not GAE, what are the advantages?
+                advantages = q_values - values
             else:
-                # TODO: implement GAE
+                # DONE: implement GAE
                 batch_size = obs.shape[0]
 
                 # HINT: append a dummy T+1 value for simpler recursive calculation
@@ -151,16 +165,17 @@ class PGAgent(nn.Module):
                 advantages = np.zeros(batch_size + 1)
 
                 for i in reversed(range(batch_size)):
-                    # TODO: recursively compute advantage estimates starting from timestep T.
+                    # DONE: recursively compute advantage estimates starting from timestep T.
                     # HINT: use terminals to handle edge cases. terminals[i] is 1 if the state is the last in its
                     # trajectory, and 0 otherwise.
-                    pass
+                    delta = rewards[i] + self.gamma * (1 - terminals[i]) * values[i + 1] - values[i]
+                    advantages[i] = delta + (1 - terminals[i]) * self.gae_lambda * self.gamma * advantages[i+1]
 
                 # remove dummy advantage
                 advantages = advantages[:-1]
 
-        # TODO: normalize the advantages to have a mean of zero and a standard deviation of one within the batch
+        # DONE: normalize the advantages to have a mean of zero and a standard deviation of one within the batch
         if self.normalize_advantages:
-            pass
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         return advantages

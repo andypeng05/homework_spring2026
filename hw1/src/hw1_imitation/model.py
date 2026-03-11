@@ -46,13 +46,29 @@ class MSEPolicy(BasePolicy):
         hidden_dims: tuple[int, ...] = (128, 128),
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
+        layers = []
+        input_dim = state_dim
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            input_dim = hidden_dim
+        layers.append(nn.Linear(hidden_dims[-1], chunk_size * action_dim))
+        self.actor_net = nn.Sequential(*layers)
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Forward pass returning action chunk of shape (batch, chunk_size, action_dim)."""
+        batch_size = state.shape[0]
+        out = self.actor_net(state)
+        return out.view(batch_size, self.chunk_size, self.action_dim)
 
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        pred_chunk = self.forward(state)
+        loss = nn.functional.mse_loss(pred_chunk, action_chunk)
+        return loss
 
     def sample_actions(
         self,
@@ -60,7 +76,7 @@ class MSEPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        return self.forward(state)
 
 
 class FlowMatchingPolicy(BasePolicy):
@@ -75,13 +91,41 @@ class FlowMatchingPolicy(BasePolicy):
         hidden_dims: tuple[int, ...] = (128, 128),
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
+        input_dim = state_dim + chunk_size * action_dim + 1
+        layers = []
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            input_dim = hidden_dim
+        layers.append(nn.Linear(hidden_dims[-1], chunk_size * action_dim))
+        self.v_net = nn.Sequential(*layers)
+
+    def forward(
+        self, state: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor
+    ) -> torch.Tensor:
+        """Just formats the input and output for the velocity network."""
+        batch_size = state.shape[0]
+        x_t_flat = x_t.view(batch_size, -1)
+        net_input = torch.cat([state, x_t_flat, t], dim=-1)
+        vel_flat = self.v_net(net_input)
+        return vel_flat.view(batch_size, self.chunk_size, self.action_dim)
 
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        batch_size = action_chunk.shape[0]
+        device = action_chunk.device
+        t = torch.rand(batch_size, 1, device=device)
+        x_0 = torch.randn_like(action_chunk)
+        x_1 = action_chunk
+        t_expanded = t.unsqueeze(-1)  # (batch, 1, 1)
+        x_t = (1 - t_expanded) * x_0 + t_expanded * x_1
+        target_vel = x_1 - x_0
+        pred_vel = self.forward(state, x_t, t)
+        loss = nn.functional.mse_loss(pred_vel, target_vel)
+        return loss
 
     def sample_actions(
         self,
@@ -89,7 +133,20 @@ class FlowMatchingPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        batch_size = state.shape[0]
+        device = state.device
+        
+        x = torch.randn(
+            batch_size, self.chunk_size, self.action_dim, device=device
+        )
+        
+        dt = 1.0 / num_steps
+        for i in range(num_steps):
+            t = torch.full((batch_size, 1), i * dt, device=device)
+            vel = self.forward(state, x, t)
+            x = x + dt * vel
+        
+        return x
 
 
 PolicyType: TypeAlias = Literal["mse", "flow"]
