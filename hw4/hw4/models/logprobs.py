@@ -44,13 +44,16 @@ def compute_per_token_logprobs(
     # Respect enable_grad: when enable_grad=False this function should not build an
     # autograd graph.
     with torch.set_grad_enabled(enable_grad):
+        if enable_grad and hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
         out = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
-    logits = out.logits # [B, L, V]
-    targets = input_ids[:, 1:] # [B, L-1]
-    logits_flat = logits.view(-1, logits.size(-1)) # [(B*(L-1)), V]
-    targets_flat = targets.view(-1) # [B*(L-1)]
-    nll = F.cross_entropy(logits_flat, targets_flat, reduction='none') # [(B*(L-1))]
-    return -nll.view(input_ids.size(0), input_ids.size(1) - 1) # [B, L-1]
+        logits = out.logits  # [B, L, V]
+        logits_pred = logits[:, :-1, :]  # [B, L-1, V] predicts token at t+1 from position t
+        targets = input_ids[:, 1:]  # [B, L-1] (non-contiguous — reshape not view)
+        logits_flat = logits_pred.reshape(-1, logits.size(-1))
+        targets_flat = targets.reshape(-1)
+        nll = F.cross_entropy(logits_flat, targets_flat, reduction="none")
+        return -nll.reshape(input_ids.size(0), input_ids.size(1) - 1)
 
 
 def build_completion_mask(
