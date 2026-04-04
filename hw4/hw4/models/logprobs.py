@@ -14,7 +14,7 @@ def compute_per_token_logprobs(
     enable_grad: bool = True,
 ) -> torch.Tensor:
     """Returns log p(x_t | x_<t) for t in [1, L-1]. input_ids/attention_mask are [B, L]; output is [B, L-1]."""
-    # TODO(student): implement next-token log-probs aligned to target tokens.
+    # DONE(student): implement next-token log-probs aligned to target tokens.
     # Notation:
     # - B = batch size (number of sequences)
     # - L = tokenized sequence length including prompt, completion, and any padding
@@ -43,7 +43,14 @@ def compute_per_token_logprobs(
     #
     # Respect enable_grad: when enable_grad=False this function should not build an
     # autograd graph.
-    raise NotImplementedError("student TODO: compute_per_token_logprobs")
+    with torch.set_grad_enabled(enable_grad):
+        out = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+    logits = out.logits # [B, L, V]
+    targets = input_ids[:, 1:] # [B, L-1]
+    logits_flat = logits.view(-1, logits.size(-1)) # [(B*(L-1)), V]
+    targets_flat = targets.view(-1) # [B*(L-1)]
+    nll = F.cross_entropy(logits_flat, targets_flat, reduction='none') # [(B*(L-1))]
+    return -nll.view(input_ids.size(0), input_ids.size(1) - 1) # [B, L-1]
 
 
 def build_completion_mask(
@@ -53,7 +60,7 @@ def build_completion_mask(
     pad_token_id: int,
 ) -> torch.Tensor:
     """Mask over per-token positions [B, L-1], selecting completion tokens only."""
-    # TODO(student): return a float mask of shape [B, L-1] on the same device as
+    # DONE(student): return a float mask of shape [B, L-1] on the same device as
     # input_ids. Here input_ids and attention_mask both have shape [B, L].
     #
     # The per-token logprob tensor is indexed by t in [0, L-2], where entry t scores
@@ -66,7 +73,11 @@ def build_completion_mask(
     # prompt_input_len is the (padded) prompt length before completion tokens were
     # appended. You can use attention_mask to exclude padding; pad_token_id is passed
     # for convenience but a direct attention-mask-based solution is fine.
-    raise NotImplementedError("student TODO: build_completion_mask")
+    mask = attention_mask[:, 1:].to(dtype=torch.float32)
+    prompt_targets_end = prompt_input_len - 1  # zero t where target index t+1 < prompt_input_len
+    if prompt_targets_end > 0:
+        mask[:, :prompt_targets_end] = 0
+    return mask
 
 
 def masked_sum(x: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -89,7 +100,7 @@ def approx_kl_from_logprobs(
     log_ratio_clip: float = 20.0,
 ) -> torch.Tensor:
     """Positive KL proxy from sampled actions."""
-    # TODO(student): implement a masked mean KL proxy. All three inputs have shape
+    # DONE(student): implement a masked mean KL proxy. All three inputs have shape
     # [B, L-1], and mask selects only completion-token positions.
     #
     # This is an approximate / sampled KL, not an exact full-vocabulary KL at each
@@ -110,4 +121,6 @@ def approx_kl_from_logprobs(
     #                             = KL(p_new || p_ref).
     #
     # The clamp to [-20, 20] is for numerical stability / variance control.
-    raise NotImplementedError("student TODO: approx_kl_from_logprobs")
+    delta = torch.clamp(ref_logprobs - new_logprobs, -log_ratio_clip, log_ratio_clip)
+    per_token = torch.exp(delta) - delta - 1
+    return masked_mean(per_token, mask, eps)
